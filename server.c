@@ -3,14 +3,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include <microhttpd.h>
-#include <curl/curl.h>
 #include <json-c/json.h>
 
 #define PORT 8080
 #define TEMP_DIR "/tmp/c_converter"
+#define BUFFER_SIZE 4096
 
 typedef struct {
     char *git_url;
@@ -22,8 +24,6 @@ typedef struct {
     char *error;
     int success;
 } ConversionResult;
-
-static struct MHD_Daemon *http_daemon;
 
 int file_exists(const char *path) {
     struct stat st;
@@ -201,6 +201,7 @@ ConversionResult* convert_git_repository(const char *git_url) {
     
     if (!result->repo_name) {
         result->error = strdup("Invalid repository URL");
+        result->success = 0;
         return result;
     }
     
@@ -211,12 +212,15 @@ ConversionResult* convert_git_repository(const char *git_url) {
     
     cleanup_directory(repo_dir);
     
+    printf("Cloning repository: %s\n", git_url);
     if (!clone_repository(git_url, repo_dir)) {
         result->error = strdup("Failed to clone repository");
+        result->success = 0;
         cleanup_directory(repo_dir);
         return result;
     }
     
+    printf("Scanning for C files...\n");
     int c_files = 0, header_files = 0;
     scan_directory(repo_dir, &c_files, &header_files);
     
@@ -224,109 +228,109 @@ ConversionResult* convert_git_repository(const char *git_url) {
     result->header_files_count = header_files;
     result->is_c_project = (c_files > 0);
     
+    printf("Found %d C files and %d header files\n", c_files, header_files);
+    
     if (!result->is_c_project) {
         result->error = strdup("No C files found in repository");
+        result->success = 0;
         cleanup_directory(repo_dir);
         return result;
     }
     
+    printf("Creating header-only file...\n");
     result->header_filename = create_header_only_file(repo_dir, result->repo_name);
     
     if (!result->header_filename) {
         result->error = strdup("Failed to create header-only file");
+        result->success = 0;
         cleanup_directory(repo_dir);
         return result;
     }
     
     cleanup_directory(repo_dir);
+    result->success = 1;
     
+    printf("Conversion completed successfully!\n");
     return result;
 }
 
 json_object* create_json_response(ConversionResult *result) {
     json_object *response = json_object_new_object();
     
+    json_object_object_add(response, "success", json_object_new_boolean(result->success));
+    
     if (result->success) {
-        json_object_object_add(response, "success", json_object_new_boolean(1));
         json_object_object_add(response, "repository", json_object_new_string(result->repo_name));
         json_object_object_add(response, "c_files_count", json_object_new_int(result->c_files_count));
         json_object_object_add(response, "header_files_count", json_object_new_int(result->header_files_count));
         json_object_object_add(response, "filename", json_object_new_string(result->header_filename));
     } else {
-        json_object_object_add(response, "success", json_object_new_boolean(0));
-        json_object_object_add(response, "error", json_object_new_string(result->error));
+        json_object_object_add(response, "error", json_object_new_string(result->error ? result->error : "Unknown error"));
     }
     
     return response;
 }
 
-enum MHD_Result handle_request(void *cls, struct MHD_Connection *connection,
-                               const char *url, const char *method,
-                               const char *version, const char *upload_data,
-                               size_t *upload_data_size, void **con_cls) {
-    (void)cls; (void)version; (void)con_cls;
+char* read_html_file() {
+    return read_file_content("index.html");
+}
+
+void send_response(int client_fd, const char *content, const char *content_type, int status_code) {
+    char response_header[1024];
+    snprintf(response_header, sizeof(response_header),
+             "HTTP/1.1 %d OK\r\n"
+             "Content-Type: %s\r\n"
+             "Content-Length: %zu\r\n"
+             "Access-Control-Allow-Origin: *\r\n"
+             "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+             "Access-Control-Allow-Headers: Content-Type\r\n"
+             "\r\n",
+             status_code, content_type, strlen(content));
     
-    const char *page = "<html><body><h1>Giga-Header</h1></body></html>";
-    struct MHD_Response *response;
-    enum MHD_Result ret;
-    
-    if (strcmp(method, "GET") == 0) {
-        if (strcmp(url, "/") == 0) {
-            char *html_content = read_file_content("index.html");
-            if (html_content) {
-                response = MHD_create_response_from_buffer(strlen(html_content), html_content, MHD_RESPMEM_MUST_FREE);
-                MHD_add_response_header(response, "Content-Type", "text/html");
-                ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-                MHD_destroy_response(response);
-                return ret;
-            }
+    write(client_fd, response_header, strlen(response_header));
+    write(client_fd, content, strlen(content));
+}
+
+void handle_request(int client_fd, const char *method, const char *url, const char *body) {
+    if (strcmp(method, "GET") == 0 && strcmp(url, "/") == 0) {
+        char *html_content = read_html_file();
+        if (html_content) {
+            send_response(client_fd, html_content, "text/html", 200);
+            free(html_content);
+        } else {
+            const char *error_html = "<html><body><h1>Giga-Header</h1><p>Error loading page</p></body></html>";
+            send_response(client_fd, error_html, "text/html", 500);
         }
     } else if (strcmp(method, "POST") == 0 && strcmp(url, "/convert") == 0) {
-        const char *content_length = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Length");
-        if (!content_length) {
-            return MHD_NO;
-        }
+        printf("Received conversion request\n");
         
-        if (*upload_data_size == 0) {
-            return MHD_YES;
-        }
-        
-        json_object *request_json = json_tokener_parse(upload_data);
+        json_object *request_json = json_tokener_parse(body);
         if (!request_json) {
             const char *error_json = "{\"success\":false,\"error\":\"Invalid JSON\"}";
-            response = MHD_create_response_from_buffer(strlen(error_json), (void*)error_json, MHD_RESPMEM_PERSISTENT);
-            MHD_add_response_header(response, "Content-Type", "application/json");
-            ret = MHD_queue_response(connection, MHD_HTTP_BAD_REQUEST, response);
-            MHD_destroy_response(response);
-            *upload_data_size = 0;
-            return ret;
+            send_response(client_fd, error_json, "application/json", 400);
+            return;
         }
         
         json_object *git_url_obj;
         if (!json_object_object_get_ex(request_json, "git_url", &git_url_obj)) {
             const char *error_json = "{\"success\":false,\"error\":\"Missing git_url field\"}";
-            response = MHD_create_response_from_buffer(strlen(error_json), (void*)error_json, MHD_RESPMEM_PERSISTENT);
-            MHD_add_response_header(response, "Content-Type", "application/json");
-            ret = MHD_queue_response(connection, MHD_HTTP_BAD_REQUEST, response);
-            MHD_destroy_response(response);
+            send_response(client_fd, error_json, "application/json", 400);
             json_object_put(request_json);
-            *upload_data_size = 0;
-            return ret;
+            return;
         }
         
         const char *git_url = json_object_get_string(git_url_obj);
+        printf("Processing URL: %s\n", git_url);
         
         ConversionResult *result = convert_git_repository(git_url);
-        result->success = (result->error == NULL);
         
         json_object *response_json = create_json_response(result);
         const char *response_string = json_object_to_json_string(response_json);
         
-        response = MHD_create_response_from_buffer(strlen(response_string), (void*)response_string, MHD_RESPMEM_MUST_COPY);
-        MHD_add_response_header(response, "Content-Type", "application/json");
-        ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+        printf("Sending response: %s\n", response_string);
         
-        MHD_destroy_response(response);
+        send_response(client_fd, response_string, "application/json", 200);
+        
         json_object_put(response_json);
         json_object_put(request_json);
         
@@ -335,36 +339,68 @@ enum MHD_Result handle_request(void *cls, struct MHD_Connection *connection,
         if (result->header_filename) free(result->header_filename);
         if (result->error) free(result->error);
         free(result);
-        
-        *upload_data_size = 0;
-        return ret;
+    } else {
+        const char *error_json = "{\"success\":false,\"error\":\"Not found\"}";
+        send_response(client_fd, error_json, "application/json", 404);
     }
-    
-    response = MHD_create_response_from_buffer(strlen(page), (void*)page, MHD_RESPMEM_PERSISTENT);
-    ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
-    MHD_destroy_response(response);
-    
-    return ret;
 }
 
 int main() {
+    int server_fd, client_fd;
+    struct sockaddr_in address;
+    int opt = 1;
+    socklen_t addrlen = sizeof(address);
+    char buffer[BUFFER_SIZE] = {0};
+    
     create_directory(TEMP_DIR);
     
-    http_daemon = MHD_start_daemon(MHD_USE_ERROR_LOG, PORT, NULL, NULL,
-                             &handle_request, NULL, MHD_OPTION_END);
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+        perror("socket failed");
+        exit(EXIT_FAILURE);
+    }
     
-    if (!http_daemon) {
-        fprintf(stderr, "Failed to start server on port %d\n", PORT);
-        return 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
+    
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+    
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+    
+    if (listen(server_fd, 3) < 0) {
+        perror("listen");
+        exit(EXIT_FAILURE);
     }
     
     printf("Giga-Header Server running on port %d\n", PORT);
     printf("Open http://localhost:%d in your browser\n", PORT);
+    printf("Press Ctrl+C to stop the server...\n");
     
-    getchar();
-    
-    MHD_stop_daemon(http_daemon);
-    cleanup_directory(TEMP_DIR);
+    while (1) {
+        if ((client_fd = accept(server_fd, (struct sockaddr *)&address, &addrlen)) < 0) {
+            perror("accept");
+            continue;
+        }
+        
+        read(client_fd, buffer, BUFFER_SIZE);
+        
+        char method[16], url[256], version[16];
+        sscanf(buffer, "%s %s %s", method, url, version);
+        
+        char *body = strstr(buffer, "\r\n\r\n");
+        if (body) body += 4;
+        
+        handle_request(client_fd, method, url, body ? body : "");
+        
+        close(client_fd);
+        memset(buffer, 0, BUFFER_SIZE);
+    }
     
     return 0;
 }
