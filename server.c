@@ -35,8 +35,8 @@ int create_directory(const char *path) {
 }
 
 void cleanup_directory(const char *path) {
-    char command[512];
-    snprintf(command, sizeof(command), "rm -rf %s", path);
+    char command[1024];
+    snprintf(command, sizeof(command), "rm -rf \"%s\"", path);
     system(command);
 }
 
@@ -264,6 +264,7 @@ enum MHD_Result handle_request(void *cls, struct MHD_Connection *connection,
                                const char *url, const char *method,
                                const char *version, const char *upload_data,
                                size_t *upload_data_size, void **con_cls) {
+    (void)cls; (void)version; (void)con_cls;
     
     const char *page = "<html><body><h1>Giga-Header</h1></body></html>";
     struct MHD_Response *response;
