@@ -1,64 +1,60 @@
 # Giga-Header
 
-A neobrutalist web application that converts C projects into header-only files.
+Converts C projects into header-only files. Available as a CLI tool and a web interface.
 
 ## Features
 
-- **Neobrutalist Design**: Bold, high-contrast visual style with thick borders and vibrant colors
-- **C Backend**: Lightweight HTTP server written in C using libmicrohttpd
-- **Git Integration**: Clones repositories and detects C projects
-- **Header-Only Conversion**: Merges all C source files into a single header file
-- **Real-time Processing**: Shows conversion status and provides download links
+- Clones a git repo, scans for `.c` and `.h` files
+- Categorizes `#include` directives into standard, external, and project-local
+- Inlines project-local headers recursively at point of use
+- Deduplicates standard and external includes at the top of the output
+- External library dependencies are preserved so the output still compiles
 
 ## Requirements
 
-- GCC compiler
-- libmicrohttpd-dev
-- libcurl4-openssl-dev  
+- GCC
 - libjson-c-dev
 - git
 
-## Installation
-
-### Ubuntu/Debian
-```bash
-make install-deps
-```
-
-### Other Systems
-Install the required libraries manually:
-- libmicrohttpd
-- libcurl
-- json-c
-- git
-
-## Building and Running
+## Build
 
 ```bash
+make install-deps   # Ubuntu/Debian
 make
-make run
 ```
-
-The server will start on port 8080. Open http://localhost:8080 in your browser.
 
 ## Usage
 
-1. Enter a Git repository URL (must be a C project)
-2. Click "Convert Project"
-3. Wait for the conversion to complete
-4. Download the generated header-only file
-
-## Architecture
-
-- **Frontend**: Single HTML page with neobrutalist CSS styling
-- **Backend**: Pure C HTTP server using libmicrohttpd
-- **Processing**: File system operations and string manipulation
-- **API**: RESTful endpoint `/convert` with JSON responses
-
-## Clean Up
+### CLI
 
 ```bash
-make clean
+./server <git_url>
+./server <git_url> -o output.h
+```
+
+### Web
+
+```bash
+./server serve
+```
+
+Opens on http://localhost:8080.
+
+## Output Format
+
+```c
+#ifndef REPO_COMBINED_H
+#define REPO_COMBINED_H
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <openssl/ssl.h>
+#include <zlib.h>
+
+// inlined project source code...
+
+#endif
 ```
 
 ## License
