@@ -59,4 +59,4 @@ Opens on http://localhost:8080.
 
 ## License
 
-MIT License
+This project is licensed under the **DBaJ-GPL** see the [LICENCE](LICENCE) file for the full terms.
