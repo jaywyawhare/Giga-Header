@@ -202,7 +202,6 @@ int verify_github_repo(const char *url) {
 
 int clone_repository(const char *git_url, const char *target_dir) {
     char command[1024];
-    snprintf(command, sizeof(command), "git clone --depth 1 \"%s\" \"%s\" 2>/dev/null",
     snprintf(command, sizeof(command), "git clone --depth 1 %s %s 2>/dev/null",
              git_url, target_dir);
     return (system(command) == 0);
