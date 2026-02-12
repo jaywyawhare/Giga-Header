@@ -396,7 +396,24 @@ IncludeType parse_include_line(const char *line, char *header,
     if (((strncmp(p, "ifdef", 5) == 0) && isspace(p[5])) ||
         ((strncmp(p, "ifndef", 6) == 0) && isspace(p[6])) ||
         ((strncmp(p, "if", 2) == 0) && isspace(p[2]))) {
-        return INCLUDE_IF;
+
+        const char *macro_start = p;
+        while (*macro_start && !isspace(*macro_start))
+            macro_start++;
+        while (*macro_start == ' ' || *macro_start == '\t')
+            macro_start++;
+        const char *known[] = {"_WIN32",    "__linux__",   "__APPLE__",
+                               "__unix__",  "__cplusplus", "__GNUC__",
+                               "__clang__", "_MSC_VER",    "NDEBUG",
+                               "DEBUG",     NULL};
+        for (int i = 0; known[i]; ++i) {
+            size_t len = strlen(known[i]);
+            if (strncmp(macro_start, known[i], len) == 0 &&
+                !isalnum(macro_start[len]) && macro_start[len] != '_') {
+                return INCLUDE_IF;
+            }
+        }
+        return INCLUDE_NONE;
     }
 
     if ((strncmp(p, "endif", 5) == 0)) {
