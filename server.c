@@ -1209,9 +1209,20 @@ void send_response(int client_fd, const char *content,
              "\r\n",
              status_code, content_type, strlen(content));
 
-    write(client_fd, response_header, strlen(response_header));
-    write(client_fd, content, strlen(content));
+     int headerWritten=write(client_fd, response_header, strlen(response_header));
+     if (headerWritten<0){
+         printf("\n Unable to write the header");
+         close(client_fd);
+     
+     }
+   int payloadWritten= write(client_fd, content, strlen(content));
+     if (payloadWritten<0){
+         printf("\n Unable to write the payload");
+         close(client_fd);
+     }
+
 }
+
 
 void handle_request(int client_fd, const char *method,
                     const char *url, const char *body) {
@@ -1362,7 +1373,11 @@ int run_server(void) {
             continue;
         }
 
-        read(client_fd, buffer, BUFFER_SIZE);
+       int readBytes =  read(client_fd, buffer, BUFFER_SIZE);
+        if (readBytes<0){
+         printf("\n Unable to write the header");
+         close(client_fd);
+        }
 
         char method[16], url[256], version[16];
         sscanf(buffer, "%15s %255s %15s", method, url, version);
