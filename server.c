@@ -1,16 +1,17 @@
 #define _GNU_SOURCE
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <json-c/json.h>
+#include <limits.h>
+#include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include <sys/wait.h>
-#include <json-c/json.h>
-#include <limits.h>
+#include <unistd.h>
 
 #define PORT 8080
 #define TEMP_DIR "/tmp/c_converter"
@@ -26,9 +27,11 @@ static char g_system_paths[MAX_SYSTEM_PATHS][MAX_PATH_LEN];
 static int g_system_path_count = 0;
 
 void add_system_path(const char *path) {
-    if (g_system_path_count >= MAX_SYSTEM_PATHS) return;
+    if (g_system_path_count >= MAX_SYSTEM_PATHS)
+        return;
     struct stat st;
-    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return;
+    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+        return;
     strncpy(g_system_paths[g_system_path_count], path, MAX_PATH_LEN - 1);
     g_system_paths[g_system_path_count][MAX_PATH_LEN - 1] = '\0';
     g_system_path_count++;
@@ -60,6 +63,14 @@ typedef struct {
     int success;
 } ConversionResult;
 
+typedef enum {
+    INCLUDE_NONE = 0,
+    INCLUDE_LOCAL,  // #include "file.h"
+    INCLUDE_SYSTEM, // #include <file.h>
+    INCLUDE_IF,     // #if / #ifdef / #ifndef
+    INCLUDE_ENDIF   // #endif
+} IncludeType;
+
 void free_result(ConversionResult *result);
 
 typedef struct {
@@ -90,15 +101,12 @@ typedef struct {
     int count;
 } LineMap;
 
-
 int file_exists(const char *path) {
     struct stat st;
     return (stat(path, &st) == 0 && S_ISREG(st.st_mode));
 }
 
-int create_directory(const char *path) {
-    return mkdir(path, 0755);
-}
+int create_directory(const char *path) { return mkdir(path, 0755); }
 
 void cleanup_directory(const char *path) {
     char command[1024];
@@ -108,7 +116,8 @@ void cleanup_directory(const char *path) {
 
 char *extract_repo_name(const char *git_url) {
     const char *last_slash = strrchr(git_url, '/');
-    if (!last_slash) return NULL;
+    if (!last_slash)
+        return NULL;
 
     const char *name_start = last_slash + 1;
     const char *dot_git = strstr(name_start, ".git");
@@ -116,7 +125,8 @@ char *extract_repo_name(const char *git_url) {
     if (dot_git) {
         size_t len = (size_t)(dot_git - name_start);
         char *repo_name = malloc(len + 1);
-        if (!repo_name) return NULL;
+        if (!repo_name)
+            return NULL;
         memcpy(repo_name, name_start, len);
         repo_name[len] = '\0';
         return repo_name;
@@ -126,14 +136,14 @@ char *extract_repo_name(const char *git_url) {
 }
 
 int validate_github_url(const char *url) {
-    if (!url || *url == '\0') return 0;
+    if (!url || *url == '\0')
+        return 0;
 
     for (const char *p = url; *p; p++) {
-        if (*p == ';' || *p == '|' || *p == '&' || *p == '$' ||
-            *p == '`' || *p == '(' || *p == ')' || *p == '{' ||
-            *p == '}' || *p == '<' || *p == '>' || *p == '\'' ||
-            *p == '"' || *p == '\\' || *p == '\n' || *p == '\r' ||
-            *p == ' ' || *p == '\t')
+        if (*p == ';' || *p == '|' || *p == '&' || *p == '$' || *p == '`' ||
+            *p == '(' || *p == ')' || *p == '{' || *p == '}' || *p == '<' ||
+            *p == '>' || *p == '\'' || *p == '"' || *p == '\\' || *p == '\n' ||
+            *p == '\r' || *p == ' ' || *p == '\t')
             return 0;
     }
 
@@ -155,10 +165,12 @@ int validate_github_url(const char *url) {
         len -= 4;
     }
 
-    if (len == 0) return 0;
+    if (len == 0)
+        return 0;
 
     char *slash = strchr(buf, '/');
-    if (!slash || slash == buf) return 0;
+    if (!slash || slash == buf)
+        return 0;
     *slash = '\0';
 
     const char *owner = buf;
@@ -167,12 +179,16 @@ int validate_github_url(const char *url) {
     size_t owner_len = strlen(owner);
     size_t repo_len = strlen(repo);
 
-    if (owner_len == 0 || owner_len > 39) return 0;
-    if (repo_len == 0 || repo_len > 100) return 0;
+    if (owner_len == 0 || owner_len > 39)
+        return 0;
+    if (repo_len == 0 || repo_len > 100)
+        return 0;
 
-    if (strchr(repo, '/')) return 0;
+    if (strchr(repo, '/'))
+        return 0;
 
-    if (owner[0] == '-' || owner[owner_len - 1] == '-') return 0;
+    if (owner[0] == '-' || owner[owner_len - 1] == '-')
+        return 0;
     for (size_t i = 0; i < owner_len; i++) {
         char c = owner[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
@@ -192,7 +208,8 @@ int validate_github_url(const char *url) {
 
 int verify_github_repo(const char *url) {
 
-    if (!validate_github_url(url)) return 0;
+    if (!validate_github_url(url))
+        return 0;
     char command[512];
     snprintf(command, sizeof(command),
              "git ls-remote \"%s\" HEAD >/dev/null 2>&1", url);
@@ -209,19 +226,22 @@ int clone_repository(const char *git_url, const char *target_dir) {
 
 int is_c_file(const char *filename) {
     const char *ext = strrchr(filename, '.');
-    if (!ext) return 0;
+    if (!ext)
+        return 0;
     return (strcmp(ext, ".c") == 0);
 }
 
 int is_header_file(const char *filename) {
     const char *ext = strrchr(filename, '.');
-    if (!ext) return 0;
+    if (!ext)
+        return 0;
     return (strcmp(ext, ".h") == 0);
 }
 
 void scan_directory(const char *dir_path, int *c_files, int *header_files) {
     DIR *dir = opendir(dir_path);
-    if (!dir) return;
+    if (!dir)
+        return;
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
@@ -237,7 +257,8 @@ void scan_directory(const char *dir_path, int *c_files, int *header_files) {
                 (*header_files)++;
         } else if (entry->d_type == DT_DIR) {
             char sub_path[MAX_PATH_LEN];
-            snprintf(sub_path, sizeof(sub_path), "%s/%s", dir_path, entry->d_name);
+            snprintf(sub_path, sizeof(sub_path), "%s/%s", dir_path,
+                     entry->d_name);
             scan_directory(sub_path, c_files, header_files);
         }
     }
@@ -247,7 +268,8 @@ void scan_directory(const char *dir_path, int *c_files, int *header_files) {
 
 char *read_file_content(const char *filepath) {
     FILE *file = fopen(filepath, "r");
-    if (!file) return NULL;
+    if (!file)
+        return NULL;
 
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
@@ -271,7 +293,6 @@ char *read_file_content(const char *filepath) {
     return content;
 }
 
-
 int header_exists_on_system(const char *header) {
     char path[MAX_PATH_LEN];
     struct stat st;
@@ -283,7 +304,8 @@ int header_exists_on_system(const char *header) {
     return 0;
 }
 
-int include_list_contains(char list[][MAX_HEADER_LEN], int count, const char *item) {
+int include_list_contains(char list[][MAX_HEADER_LEN], int count,
+                          const char *item) {
     for (int i = 0; i < count; i++) {
         if (strcmp(list[i], item) == 0)
             return 1;
@@ -291,9 +313,12 @@ int include_list_contains(char list[][MAX_HEADER_LEN], int count, const char *it
     return 0;
 }
 
-void include_list_add(char list[][MAX_HEADER_LEN], int *count, const char *item) {
-    if (*count >= MAX_INCLUDES) return;
-    if (include_list_contains(list, *count, item)) return;
+void include_list_add(char list[][MAX_HEADER_LEN], int *count,
+                      const char *item) {
+    if (*count >= MAX_INCLUDES)
+        return;
+    if (include_list_contains(list, *count, item))
+        return;
     strncpy(list[*count], item, MAX_HEADER_LEN - 1);
     list[*count][MAX_HEADER_LEN - 1] = '\0';
     (*count)++;
@@ -308,7 +333,8 @@ int is_file_inlined(ConversionContext *ctx, const char *path) {
 }
 
 void mark_file_inlined(ConversionContext *ctx, const char *path) {
-    if (ctx->inlined_count >= MAX_FILES) return;
+    if (ctx->inlined_count >= MAX_FILES)
+        return;
     strncpy(ctx->inlined[ctx->inlined_count], path, MAX_PATH_LEN - 1);
     ctx->inlined[ctx->inlined_count][MAX_PATH_LEN - 1] = '\0';
     ctx->inlined_count++;
@@ -333,7 +359,8 @@ int find_header_in_repo(ConversionContext *ctx, const char *include_path,
     const char *sub_dirs[] = {"include", "src", "lib", NULL};
 
     for (int i = 0; search_bases[i] != NULL; i++) {
-        snprintf(candidate, sizeof(candidate), "%s/%s", search_bases[i], include_path);
+        snprintf(candidate, sizeof(candidate), "%s/%s", search_bases[i],
+                 include_path);
         if (file_exists(candidate) && realpath(candidate, real)) {
             strncpy(resolved, real, MAX_PATH_LEN - 1);
             resolved[MAX_PATH_LEN - 1] = '\0';
@@ -342,8 +369,8 @@ int find_header_in_repo(ConversionContext *ctx, const char *include_path,
     }
 
     for (int i = 0; sub_dirs[i] != NULL; i++) {
-        snprintf(candidate, sizeof(candidate), "%s/%s/%s",
-                 ctx->repo_dir, sub_dirs[i], include_path);
+        snprintf(candidate, sizeof(candidate), "%s/%s/%s", ctx->repo_dir,
+                 sub_dirs[i], include_path);
         if (file_exists(candidate) && realpath(candidate, real)) {
             strncpy(resolved, real, MAX_PATH_LEN - 1);
             resolved[MAX_PATH_LEN - 1] = '\0';
@@ -354,64 +381,110 @@ int find_header_in_repo(ConversionContext *ctx, const char *include_path,
     return 0;
 }
 
-int parse_include_line(const char *line, char *header, size_t header_size) {
+IncludeType parse_include_line(const char *line, char *header,
+                               size_t header_size) {
     const char *p = line;
-    while (*p == ' ' || *p == '\t') p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
 
-    if (*p != '#') return 0;
+    if (*p != '#')
+        return INCLUDE_NONE;
     p++;
-    while (*p == ' ' || *p == '\t') p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
 
-    if (strncmp(p, "include", 7) != 0) return 0;
+    if (((strncmp(p, "ifdef", 5) == 0) && isspace(p[5])) ||
+        ((strncmp(p, "ifndef", 6) == 0) && isspace(p[6])) ||
+        ((strncmp(p, "if", 2) == 0) && isspace(p[2]))) {
+
+        const char *macro_start = p;
+        while (*macro_start && !isspace(*macro_start))
+            macro_start++;
+        while (*macro_start == ' ' || *macro_start == '\t')
+            macro_start++;
+        const char *known[] = {"_WIN32",    "__linux__",   "__APPLE__",
+                               "__unix__",  "__cplusplus", "__GNUC__",
+                               "__clang__", "_MSC_VER",    "NDEBUG",
+                               "DEBUG",     NULL};
+        for (int i = 0; known[i]; ++i) {
+            size_t len = strlen(known[i]);
+            if (strncmp(macro_start, known[i], len) == 0 &&
+                !isalnum(macro_start[len]) && macro_start[len] != '_') {
+                return INCLUDE_IF;
+            }
+        }
+        return INCLUDE_NONE;
+    }
+
+    if ((strncmp(p, "endif", 5) == 0)) {
+        return INCLUDE_ENDIF;
+    }
+
+    if (strncmp(p, "include", 7) != 0)
+        return INCLUDE_NONE;
     p += 7;
-    while (*p == ' ' || *p == '\t') p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
 
     char open_char, close_char;
     int type;
     if (*p == '"') {
-        open_char = '"'; close_char = '"'; type = 1;
+        open_char = '"';
+        close_char = '"';
+        type = INCLUDE_LOCAL;
     } else if (*p == '<') {
-        open_char = '<'; close_char = '>'; type = 2;
+        open_char = '<';
+        close_char = '>';
+        type = INCLUDE_SYSTEM;
     } else {
-        return 0;
+        return INCLUDE_NONE;
     }
     (void)open_char;
 
     p++;
     const char *end = strchr(p, close_char);
-    if (!end) return 0;
+    if (!end)
+        return INCLUDE_NONE;
 
     size_t len = (size_t)(end - p);
-    if (len >= header_size) len = header_size - 1;
+    if (len >= header_size)
+        len = header_size - 1;
     memcpy(header, p, len);
     header[len] = '\0';
     return type;
 }
 
-
 void process_file_with_context(ConversionContext *ctx, const char *filepath,
                                FILE *output) {
     char *content = read_file_content(filepath);
-    if (!content) return;
+    if (!content)
+        return;
 
     char file_dir[MAX_PATH_LEN];
     get_file_directory(filepath, file_dir, sizeof(file_dir));
 
     char *pos = content;
+    int pp_depth = 0;
 
     while (*pos) {
         char *newline = strchr(pos, '\n');
         size_t line_len = newline ? (size_t)(newline - pos) : strlen(pos);
 
         char line[4096];
-        if (line_len >= sizeof(line)) line_len = sizeof(line) - 1;
+        if (line_len >= sizeof(line))
+            line_len = sizeof(line) - 1;
         memcpy(line, pos, line_len);
         line[line_len] = '\0';
 
         char header[MAX_HEADER_LEN];
         int include_type = parse_include_line(line, header, sizeof(header));
+        if (include_type == INCLUDE_IF) {
+            pp_depth++;
+        } else if (include_type == INCLUDE_ENDIF && pp_depth > 0) {
+            pp_depth--;
+        }
 
-        if (include_type == 1) {
+        if (include_type == INCLUDE_LOCAL && pp_depth == 0) {
             char resolved[MAX_PATH_LEN];
             if (find_header_in_repo(ctx, header, file_dir, resolved)) {
                 if (!is_file_inlined(ctx, resolved)) {
@@ -422,11 +495,13 @@ void process_file_with_context(ConversionContext *ctx, const char *filepath,
                 }
             } else {
                 if (header_exists_on_system(header))
-                    include_list_add(ctx->standard, &ctx->standard_count, header);
+                    include_list_add(ctx->standard, &ctx->standard_count,
+                                     header);
                 else
-                    include_list_add(ctx->external, &ctx->external_count, header);
+                    include_list_add(ctx->external, &ctx->external_count,
+                                     header);
             }
-        } else if (include_type == 2) {
+        } else if (include_type == INCLUDE_SYSTEM && pp_depth == 0) {
             if (header_exists_on_system(header))
                 include_list_add(ctx->standard, &ctx->standard_count, header);
             else
@@ -444,7 +519,8 @@ void process_file_with_context(ConversionContext *ctx, const char *filepath,
 void collect_source_files(const char *dir_path, FileList *c_files,
                           FileList *h_files) {
     DIR *dir = opendir(dir_path);
-    if (!dir) return;
+    if (!dir)
+        return;
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
@@ -460,13 +536,16 @@ void collect_source_files(const char *dir_path, FileList *c_files,
             char real[PATH_MAX];
             if (is_c_file(entry->d_name) && c_files->count < MAX_FILES) {
                 if (realpath(path, real)) {
-                    strncpy(c_files->paths[c_files->count], real, MAX_PATH_LEN - 1);
+                    strncpy(c_files->paths[c_files->count], real,
+                            MAX_PATH_LEN - 1);
                     c_files->paths[c_files->count][MAX_PATH_LEN - 1] = '\0';
                     c_files->count++;
                 }
-            } else if (is_header_file(entry->d_name) && h_files->count < MAX_FILES) {
+            } else if (is_header_file(entry->d_name) &&
+                       h_files->count < MAX_FILES) {
                 if (realpath(path, real)) {
-                    strncpy(h_files->paths[h_files->count], real, MAX_PATH_LEN - 1);
+                    strncpy(h_files->paths[h_files->count], real,
+                            MAX_PATH_LEN - 1);
                     h_files->paths[h_files->count][MAX_PATH_LEN - 1] = '\0';
                     h_files->count++;
                 }
@@ -492,8 +571,8 @@ void remove_from_filelist(FileList *list, const char *path) {
 
 int try_compile(const char *header_path, char *error_buf, size_t error_size) {
     char command[MAX_PATH_LEN + 64];
-    snprintf(command, sizeof(command),
-             "gcc -fsyntax-only -x c \"%s\" 2>&1", header_path);
+    snprintf(command, sizeof(command), "gcc -fsyntax-only -x c \"%s\" 2>&1",
+             header_path);
 
     FILE *fp = popen(command, "r");
     if (!fp) {
@@ -523,9 +602,11 @@ int find_conflicting_source(const char *error_output, LineMap *map,
 
     for (int i = 0; patterns[i]; i++) {
         found = strstr(error_output, patterns[i]);
-        if (found) break;
+        if (found)
+            break;
     }
-    if (!found) return 0;
+    if (!found)
+        return 0;
 
     /* Walk backwards from the pattern match to find the line number.
        gcc format: "file.h:LINE:COL: error: ..." */
@@ -533,11 +614,14 @@ int find_conflicting_source(const char *error_output, LineMap *map,
     while (line_start > error_output && *(line_start - 1) != '\n')
         line_start--;
 
-    /* Extract line number: skip filename, then parse number after first colon */
+    /* Extract line number: skip filename, then parse number after first colon
+     */
     const char *first_colon = strchr(line_start, ':');
-    if (!first_colon) return 0;
+    if (!first_colon)
+        return 0;
     int error_line = atoi(first_colon + 1);
-    if (error_line <= 0) return 0;
+    if (error_line <= 0)
+        return 0;
 
     /* Look up which source file owns this line */
     for (int i = 0; i < map->count; i++) {
@@ -567,21 +651,34 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
         char *p = content;
         while ((p = strstr(p, "add_library")) != NULL) {
             char *paren = strchr(p, '(');
-            if (!paren) { p++; continue; }
+            if (!paren) {
+                p++;
+                continue;
+            }
             char *close = strchr(paren, ')');
-            if (!close) { p++; continue; }
+            if (!close) {
+                p++;
+                continue;
+            }
 
             /* Skip library name (first token after paren) */
             char *tok = paren + 1;
-            while (*tok == ' ' || *tok == '\t' || *tok == '\n') tok++;
-            while (*tok && *tok != ' ' && *tok != '\t' && *tok != '\n' && *tok != ')') tok++;
+            while (*tok == ' ' || *tok == '\t' || *tok == '\n')
+                tok++;
+            while (*tok && *tok != ' ' && *tok != '\t' && *tok != '\n' &&
+                   *tok != ')')
+                tok++;
 
             /* Extract .c filenames */
             while (tok < close) {
-                while (*tok == ' ' || *tok == '\t' || *tok == '\n') tok++;
-                if (tok >= close) break;
+                while (*tok == ' ' || *tok == '\t' || *tok == '\n')
+                    tok++;
+                if (tok >= close)
+                    break;
                 char *end = tok;
-                while (*end && *end != ' ' && *end != '\t' && *end != '\n' && *end != ')') end++;
+                while (*end && *end != ' ' && *end != '\t' && *end != '\n' &&
+                       *end != ')')
+                    end++;
                 size_t len = (size_t)(end - tok);
                 char fname[MAX_PATH_LEN];
                 if (len > 0 && len < sizeof(fname)) {
@@ -601,10 +698,13 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
                             base = base ? base + 1 : fname;
 
                             for (int i = 0; i < all_c->count; i++) {
-                                const char *cbase = strrchr(all_c->paths[i], '/');
+                                const char *cbase =
+                                    strrchr(all_c->paths[i], '/');
                                 cbase = cbase ? cbase + 1 : all_c->paths[i];
-                                if (strcmp(cbase, base) == 0 && result.count < MAX_FILES) {
-                                    strncpy(result.paths[result.count], all_c->paths[i], MAX_PATH_LEN - 1);
+                                if (strcmp(cbase, base) == 0 &&
+                                    result.count < MAX_FILES) {
+                                    strncpy(result.paths[result.count],
+                                            all_c->paths[i], MAX_PATH_LEN - 1);
                                     result.count++;
                                 }
                             }
@@ -616,7 +716,8 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
             p = close + 1;
         }
         free(content);
-        if (result.count > 0) return result;
+        if (result.count > 0)
+            return result;
     }
 
     /* Try Makefile / makefile */
@@ -624,7 +725,8 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
     for (int m = 0; makefiles[m]; m++) {
         snprintf(path, sizeof(path), "%s/%s", repo_dir, makefiles[m]);
         content = read_file_content(path);
-        if (!content) continue;
+        if (!content)
+            continue;
 
         /* Look for SRCS=, SOURCES=, SRC=, OBJS= lines */
         const char *prefixes[] = {"SRCS", "SOURCES", "SRC", "OBJS", NULL};
@@ -633,26 +735,33 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
             char *nl = strchr(line, '\n');
             size_t llen = nl ? (size_t)(nl - line) : strlen(line);
             char lbuf[4096];
-            if (llen >= sizeof(lbuf)) llen = sizeof(lbuf) - 1;
+            if (llen >= sizeof(lbuf))
+                llen = sizeof(lbuf) - 1;
             memcpy(lbuf, line, llen);
             lbuf[llen] = '\0';
 
             for (int pi = 0; prefixes[pi]; pi++) {
                 char *var = strstr(lbuf, prefixes[pi]);
-                if (!var) continue;
+                if (!var)
+                    continue;
                 /* Skip to after '=' */
                 char *eq = strchr(var, '=');
-                if (!eq) continue;
+                if (!eq)
+                    continue;
                 eq++;
-                while (*eq == ' ' || *eq == '\t') eq++;
+                while (*eq == ' ' || *eq == '\t')
+                    eq++;
 
                 /* Extract filenames from this line */
                 char *tok = eq;
                 while (*tok) {
-                    while (*tok == ' ' || *tok == '\t' || *tok == '\\') tok++;
-                    if (!*tok) break;
+                    while (*tok == ' ' || *tok == '\t' || *tok == '\\')
+                        tok++;
+                    if (!*tok)
+                        break;
                     char *end = tok;
-                    while (*end && *end != ' ' && *end != '\t' && *end != '\\') end++;
+                    while (*end && *end != ' ' && *end != '\t' && *end != '\\')
+                        end++;
                     size_t tlen = (size_t)(end - tok);
                     char fname[MAX_PATH_LEN];
                     if (tlen > 0 && tlen < sizeof(fname)) {
@@ -670,18 +779,24 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
                             const char *base = strrchr(fname, '/');
                             base = base ? base + 1 : fname;
                             for (int i = 0; i < all_c->count; i++) {
-                                const char *cbase = strrchr(all_c->paths[i], '/');
+                                const char *cbase =
+                                    strrchr(all_c->paths[i], '/');
                                 cbase = cbase ? cbase + 1 : all_c->paths[i];
-                                if (strcmp(cbase, base) == 0 && result.count < MAX_FILES) {
+                                if (strcmp(cbase, base) == 0 &&
+                                    result.count < MAX_FILES) {
                                     /* Avoid duplicates */
                                     int dup = 0;
                                     for (int d = 0; d < result.count; d++) {
-                                        if (strcmp(result.paths[d], all_c->paths[i]) == 0) {
-                                            dup = 1; break;
+                                        if (strcmp(result.paths[d],
+                                                   all_c->paths[i]) == 0) {
+                                            dup = 1;
+                                            break;
                                         }
                                     }
                                     if (!dup) {
-                                        strncpy(result.paths[result.count], all_c->paths[i], MAX_PATH_LEN - 1);
+                                        strncpy(result.paths[result.count],
+                                                all_c->paths[i],
+                                                MAX_PATH_LEN - 1);
                                         result.count++;
                                     }
                                 }
@@ -694,31 +809,41 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
             line = nl ? nl + 1 : line + llen;
         }
         free(content);
-        if (result.count > 0) return result;
+        if (result.count > 0)
+            return result;
     }
 
     /* Try meson.build */
     snprintf(path, sizeof(path), "%s/meson.build", repo_dir);
     content = read_file_content(path);
     if (content) {
-        const char *lib_funcs[] = {"library(", "static_library(", "shared_library(", NULL};
+        const char *lib_funcs[] = {"library(", "static_library(",
+                                   "shared_library(", NULL};
         for (int lf = 0; lib_funcs[lf]; lf++) {
             char *p = content;
             while ((p = strstr(p, lib_funcs[lf])) != NULL) {
                 char *paren = strchr(p, '(');
-                if (!paren) { p++; continue; }
+                if (!paren) {
+                    p++;
+                    continue;
+                }
 
                 /* Find matching close paren (simple, not nested) */
                 char *close = strchr(paren, ')');
-                if (!close) { p++; continue; }
+                if (!close) {
+                    p++;
+                    continue;
+                }
 
                 /* Extract quoted .c filenames */
                 char *s = paren;
                 while (s < close) {
                     char *q = strchr(s, '\'');
-                    if (!q || q >= close) break;
+                    if (!q || q >= close)
+                        break;
                     char *q2 = strchr(q + 1, '\'');
-                    if (!q2 || q2 >= close) break;
+                    if (!q2 || q2 >= close)
+                        break;
 
                     size_t slen = (size_t)(q2 - q - 1);
                     char fname[MAX_PATH_LEN];
@@ -731,10 +856,13 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
                             const char *base = strrchr(fname, '/');
                             base = base ? base + 1 : fname;
                             for (int i = 0; i < all_c->count; i++) {
-                                const char *cbase = strrchr(all_c->paths[i], '/');
+                                const char *cbase =
+                                    strrchr(all_c->paths[i], '/');
                                 cbase = cbase ? cbase + 1 : all_c->paths[i];
-                                if (strcmp(cbase, base) == 0 && result.count < MAX_FILES) {
-                                    strncpy(result.paths[result.count], all_c->paths[i], MAX_PATH_LEN - 1);
+                                if (strcmp(cbase, base) == 0 &&
+                                    result.count < MAX_FILES) {
+                                    strncpy(result.paths[result.count],
+                                            all_c->paths[i], MAX_PATH_LEN - 1);
                                     result.count++;
                                 }
                             }
@@ -746,7 +874,8 @@ FileList filter_by_build_system(const char *repo_dir, FileList *all_c) {
             }
         }
         free(content);
-        if (result.count > 0) return result;
+        if (result.count > 0)
+            return result;
     }
 
     return result;
@@ -766,7 +895,8 @@ FileList filter_by_header_match(FileList *c_files, FileList *h_files) {
         strncpy(c_stem, c_base, sizeof(c_stem) - 1);
         c_stem[sizeof(c_stem) - 1] = '\0';
         char *dot = strrchr(c_stem, '.');
-        if (dot) *dot = '\0';
+        if (dot)
+            *dot = '\0';
 
         for (int j = 0; j < h_files->count; j++) {
             const char *h_base = strrchr(h_files->paths[j], '/');
@@ -776,10 +906,12 @@ FileList filter_by_header_match(FileList *c_files, FileList *h_files) {
             strncpy(h_stem, h_base, sizeof(h_stem) - 1);
             h_stem[sizeof(h_stem) - 1] = '\0';
             char *hdot = strrchr(h_stem, '.');
-            if (hdot) *hdot = '\0';
+            if (hdot)
+                *hdot = '\0';
 
             if (strcmp(c_stem, h_stem) == 0 && result.count < MAX_FILES) {
-                strncpy(result.paths[result.count], c_files->paths[i], MAX_PATH_LEN - 1);
+                strncpy(result.paths[result.count], c_files->paths[i],
+                        MAX_PATH_LEN - 1);
                 result.count++;
                 break;
             }
@@ -789,21 +921,27 @@ FileList filter_by_header_match(FileList *c_files, FileList *h_files) {
     return result;
 }
 
-/* Check if a main() definition at position p in content is inside an #if/#ifdef block.
-   Simple heuristic: count #if/#ifdef vs #endif lines before the position. */
+/* Check if a main() definition at position p in content is inside an #if/#ifdef
+   block. Simple heuristic: count #if/#ifdef vs #endif lines before the
+   position. */
 int main_is_ifdef_guarded(const char *content, const char *main_pos) {
     int depth = 0;
     const char *line = content;
     while (line < main_pos) {
-        while (*line == ' ' || *line == '\t') line++;
+        while (*line == ' ' || *line == '\t')
+            line++;
         if (*line == '#') {
             const char *dir = line + 1;
-            while (*dir == ' ' || *dir == '\t') dir++;
-            if (strncmp(dir, "if", 2) == 0) depth++;
-            else if (strncmp(dir, "endif", 5) == 0 && depth > 0) depth--;
+            while (*dir == ' ' || *dir == '\t')
+                dir++;
+            if (strncmp(dir, "if", 2) == 0)
+                depth++;
+            else if (strncmp(dir, "endif", 5) == 0 && depth > 0)
+                depth--;
         }
         const char *nl = strchr(line, '\n');
-        if (!nl) break;
+        if (!nl)
+            break;
         line = nl + 1;
     }
     return depth > 0;
@@ -814,18 +952,22 @@ void strip_main_files(FileList *list) {
     int i = 0;
     while (i < list->count) {
         char *content = read_file_content(list->paths[i]);
-        if (!content) { i++; continue; }
+        if (!content) {
+            i++;
+            continue;
+        }
 
         int has_unguarded_main = 0;
         char *p = content;
         while ((p = strstr(p, "main")) != NULL) {
             /* Check it looks like a function definition: main\s*( */
             char *after = p + 4;
-            while (*after == ' ' || *after == '\t') after++;
+            while (*after == ' ' || *after == '\t')
+                after++;
             if (*after == '(') {
                 /* Check preceding char is plausible for a definition */
-                if (p == content || *(p-1) == '\n' || *(p-1) == ' ' ||
-                    *(p-1) == '\t' || *(p-1) == '*') {
+                if (p == content || *(p - 1) == '\n' || *(p - 1) == ' ' ||
+                    *(p - 1) == '\t' || *(p - 1) == '*') {
                     if (!main_is_ifdef_guarded(content, p)) {
                         has_unguarded_main = 1;
                         break;
@@ -861,23 +1003,29 @@ void make_guard_name(const char *repo_name, char *guard, size_t guard_size) {
 
 /* Generate header content from given file lists.
  * Returns malloc'd string with the full header content.
- * If line_map is non-NULL, populates it with source file -> line range mappings.
- * If sweep_remaining_headers is set, also includes .h files not yet inlined. */
+ * If line_map is non-NULL, populates it with source file -> line range
+ * mappings. If sweep_remaining_headers is set, also includes .h files not yet
+ * inlined. */
 char *generate_header_content(const char *repo_dir, const char *repo_name,
                               FileList *c_files, FileList *h_files,
                               LineMap *line_map, int sweep_remaining_headers) {
     ConversionContext *ctx = calloc(1, sizeof(ConversionContext));
-    if (!ctx) return NULL;
+    if (!ctx)
+        return NULL;
     strncpy(ctx->repo_dir, repo_dir, MAX_PATH_LEN - 1);
 
     /* Generate the code body into a memstream so we can track line numbers */
     char *code_buf = NULL;
     size_t code_size = 0;
     FILE *code_stream = open_memstream(&code_buf, &code_size);
-    if (!code_stream) { free(ctx); return NULL; }
+    if (!code_stream) {
+        free(ctx);
+        return NULL;
+    }
 
     /* We'll track lines per source file for the line map.
-     * We count lines in the code body (not the final output header/includes). */
+     * We count lines in the code body (not the final output header/includes).
+     */
     int current_line = 1; /* line counter within the code body */
 
     for (int i = 0; i < c_files->count; i++) {
@@ -886,7 +1034,8 @@ char *generate_header_content(const char *repo_dir, const char *repo_name,
         mark_file_inlined(ctx, c_files->paths[i]);
 
         const char *rel = c_files->paths[i] + strlen(repo_dir);
-        if (*rel == '/') rel++;
+        if (*rel == '/')
+            rel++;
         fprintf(code_stream, "\n/* %s */\n", rel);
         current_line += 2; /* blank line + comment line */
 
@@ -903,7 +1052,8 @@ char *generate_header_content(const char *repo_dir, const char *repo_name,
         /* Count newlines in what was just written */
         int lines_written = 0;
         for (long p = pos_before; p < pos_after; p++) {
-            if (code_buf[p] == '\n') lines_written++;
+            if (code_buf[p] == '\n')
+                lines_written++;
         }
         current_line += lines_written;
 
@@ -924,12 +1074,16 @@ char *generate_header_content(const char *repo_dir, const char *repo_name,
 
             /* Skip headers in test/example directories */
             const char *rel = h_files->paths[i] + strlen(repo_dir);
-            if (*rel == '/') rel++;
-            if (strncmp(rel, "test/", 5) == 0 || strncmp(rel, "tests/", 6) == 0 ||
-                strncmp(rel, "example/", 8) == 0 || strncmp(rel, "examples/", 9) == 0 ||
-                strncmp(rel, "bench/", 6) == 0 || strncmp(rel, "benchmark/", 10) == 0 ||
-                strstr(rel, "/test/") || strstr(rel, "/tests/") ||
-                strstr(rel, "/example/") || strstr(rel, "/examples/"))
+            if (*rel == '/')
+                rel++;
+            if (strncmp(rel, "test/", 5) == 0 ||
+                strncmp(rel, "tests/", 6) == 0 ||
+                strncmp(rel, "example/", 8) == 0 ||
+                strncmp(rel, "examples/", 9) == 0 ||
+                strncmp(rel, "bench/", 6) == 0 ||
+                strncmp(rel, "benchmark/", 10) == 0 || strstr(rel, "/test/") ||
+                strstr(rel, "/tests/") || strstr(rel, "/example/") ||
+                strstr(rel, "/examples/"))
                 continue;
 
             mark_file_inlined(ctx, h_files->paths[i]);
@@ -937,7 +1091,8 @@ char *generate_header_content(const char *repo_dir, const char *repo_name,
             current_line += 2;
             process_file_with_context(ctx, h_files->paths[i], code_stream);
             fflush(code_stream);
-            /* No need to track these in line_map - they're headers, not conflict sources */
+            /* No need to track these in line_map - they're headers, not
+             * conflict sources */
         }
     }
 
@@ -950,15 +1105,22 @@ char *generate_header_content(const char *repo_dir, const char *repo_name,
     char *result_buf = NULL;
     size_t result_size = 0;
     FILE *result_stream = open_memstream(&result_buf, &result_size);
-    if (!result_stream) { free(code_buf); free(ctx); return NULL; }
+    if (!result_stream) {
+        free(code_buf);
+        free(ctx);
+        return NULL;
+    }
 
     fprintf(result_stream, "#ifndef %s_COMBINED_H\n", guard);
     fprintf(result_stream, "#define %s_COMBINED_H\n\n", guard);
-    fprintf(result_stream, "/*\n * Auto-generated header-only file\n"
-                           " * Repository: %s\n */\n\n", repo_name);
+    fprintf(result_stream,
+            "/*\n * Auto-generated header-only file\n"
+            " * Repository: %s\n */\n\n",
+            repo_name);
 
     /* Count how many lines the header preamble takes:
-       #ifndef, #define, blank, comment-open, comment-body, comment-close+blank */
+       #ifndef, #define, blank, comment-open, comment-body, comment-close+blank
+     */
     int preamble_lines = 6;
 
     if (ctx->standard_count > 0) {
@@ -1003,7 +1165,8 @@ char *create_header_only_file(const char *repo_dir, const char *repo_name) {
     FileList *c_files = calloc(1, sizeof(FileList));
     FileList *h_files = calloc(1, sizeof(FileList));
     if (!c_files || !h_files) {
-        free(c_files); free(h_files);
+        free(c_files);
+        free(h_files);
         return NULL;
     }
 
@@ -1016,8 +1179,8 @@ char *create_header_only_file(const char *repo_dir, const char *repo_name) {
     FileList filtered = filter_by_build_system(repo_dir, c_files);
     if (filtered.count > 0) {
         printf("strategy: build system (%d files)\n", filtered.count);
-        content = generate_header_content(repo_dir, repo_name,
-                                          &filtered, h_files, NULL, 0);
+        content = generate_header_content(repo_dir, repo_name, &filtered,
+                                          h_files, NULL, 0);
         goto write_output;
     }
 
@@ -1025,8 +1188,8 @@ char *create_header_only_file(const char *repo_dir, const char *repo_name) {
     filtered = filter_by_header_match(c_files, h_files);
     if (filtered.count > 0) {
         printf("strategy: header match (%d files)\n", filtered.count);
-        content = generate_header_content(repo_dir, repo_name,
-                                          &filtered, h_files, NULL, 0);
+        content = generate_header_content(repo_dir, repo_name, &filtered,
+                                          h_files, NULL, 0);
         goto write_output;
     }
 
@@ -1041,13 +1204,15 @@ char *create_header_only_file(const char *repo_dir, const char *repo_name) {
             memset(&lmap, 0, sizeof(lmap));
 
             free(content);
-            content = generate_header_content(repo_dir, repo_name,
-                                              c_files, h_files, &lmap, 1);
-            if (!content) break;
+            content = generate_header_content(repo_dir, repo_name, c_files,
+                                              h_files, &lmap, 1);
+            if (!content)
+                break;
 
             /* Write to temp file for compilation test */
             FILE *tmp = fopen(temp_path, "w");
-            if (!tmp) break;
+            if (!tmp)
+                break;
             fputs(content, tmp);
             fclose(tmp);
 
@@ -1055,34 +1220,42 @@ char *create_header_only_file(const char *repo_dir, const char *repo_name) {
             int rc = try_compile(temp_path, errors, sizeof(errors));
             remove(temp_path);
 
-            if (rc == 0) break; /* Clean compile */
+            if (rc == 0)
+                break; /* Clean compile */
 
             char bad_source[MAX_PATH_LEN];
-            if (!find_conflicting_source(errors, &lmap, bad_source, sizeof(bad_source)))
+            if (!find_conflicting_source(errors, &lmap, bad_source,
+                                         sizeof(bad_source)))
                 break; /* Can't identify the problem */
 
             remove_from_filelist(c_files, bad_source);
             printf("removed: %s\n", bad_source);
 
-            if (c_files->count == 0) break;
+            if (c_files->count == 0)
+                break;
         }
     }
 
 write_output:
     if (!content) {
-        free(c_files); free(h_files);
+        free(c_files);
+        free(h_files);
         return NULL;
     }
 
     char header_filename[256];
-    snprintf(header_filename, sizeof(header_filename), "%s_combined.h", repo_name);
+    snprintf(header_filename, sizeof(header_filename), "%s_combined.h",
+             repo_name);
 
     char header_path[512];
-    snprintf(header_path, sizeof(header_path), "%s/%s", TEMP_DIR, header_filename);
+    snprintf(header_path, sizeof(header_path), "%s/%s", TEMP_DIR,
+             header_filename);
 
     FILE *output = fopen(header_path, "w");
     if (!output) {
-        free(content); free(c_files); free(h_files);
+        free(content);
+        free(c_files);
+        free(h_files);
         return NULL;
     }
 
@@ -1095,10 +1268,10 @@ write_output:
     return strdup(header_filename);
 }
 
-
 ConversionResult *convert_git_repository(const char *git_url) {
     ConversionResult *result = calloc(1, sizeof(ConversionResult));
-    if (!result) return NULL;
+    if (!result)
+        return NULL;
 
     result->git_url = strdup(git_url);
 
@@ -1110,8 +1283,8 @@ ConversionResult *convert_git_repository(const char *git_url) {
 
     printf("Verifying repository: %s\n", git_url);
     if (!verify_github_repo(git_url)) {
-        result->error = strdup(
-            "Repository not found or not accessible on GitHub");
+        result->error =
+            strdup("Repository not found or not accessible on GitHub");
         return result;
     }
 
@@ -1152,7 +1325,8 @@ ConversionResult *convert_git_repository(const char *git_url) {
     }
 
     printf("Creating header-only file...\n");
-    result->header_filename = create_header_only_file(repo_dir, result->repo_name);
+    result->header_filename =
+        create_header_only_file(repo_dir, result->repo_name);
 
     if (!result->header_filename) {
         result->error = strdup("Failed to create header-only file");
@@ -1166,7 +1340,6 @@ ConversionResult *convert_git_repository(const char *git_url) {
     printf("Conversion completed successfully!\n");
     return result;
 }
-
 
 json_object *create_json_response(ConversionResult *result) {
     json_object *response = json_object_new_object();
@@ -1185,19 +1358,18 @@ json_object *create_json_response(ConversionResult *result) {
                                json_object_new_string(result->header_filename));
     } else {
         json_object_object_add(response, "error",
-                               json_object_new_string(
-                                   result->error ? result->error : "Unknown error"));
+                               json_object_new_string(result->error
+                                                          ? result->error
+                                                          : "Unknown error"));
     }
 
     return response;
 }
 
-char *read_html_file(void) {
-    return read_file_content("index.html");
-}
+char *read_html_file(void) { return read_file_content("index.html"); }
 
-void send_response(int client_fd, const char *content,
-                   const char *content_type, int status_code) {
+void send_response(int client_fd, const char *content, const char *content_type,
+                   int status_code) {
     char response_header[1024];
     snprintf(response_header, sizeof(response_header),
              "HTTP/1.1 %d OK\r\n"
@@ -1213,8 +1385,8 @@ void send_response(int client_fd, const char *content,
     write(client_fd, content, strlen(content));
 }
 
-void handle_request(int client_fd, const char *method,
-                    const char *url, const char *body) {
+void handle_request(int client_fd, const char *method, const char *url,
+                    const char *body) {
     if (strcmp(method, "GET") == 0 && strcmp(url, "/") == 0) {
         char *html_content = read_html_file();
         if (html_content) {
@@ -1237,7 +1409,8 @@ void handle_request(int client_fd, const char *method,
 
         json_object *git_url_obj;
         if (!json_object_object_get_ex(request_json, "git_url", &git_url_obj)) {
-            const char *e = "{\"success\":false,\"error\":\"Missing git_url field\"}";
+            const char *e =
+                "{\"success\":false,\"error\":\"Missing git_url field\"}";
             send_response(client_fd, e, "application/json", 400);
             json_object_put(request_json);
             return;
@@ -1265,7 +1438,8 @@ void handle_request(int client_fd, const char *method,
 }
 
 void free_result(ConversionResult *result) {
-    if (!result) return;
+    if (!result)
+        return;
     free(result->git_url);
     free(result->repo_name);
     free(result->header_filename);
@@ -1284,7 +1458,8 @@ int run_cli(const char *git_url, const char *output_path) {
     }
 
     char src_path[512];
-    snprintf(src_path, sizeof(src_path), "%s/%s", TEMP_DIR, result->header_filename);
+    snprintf(src_path, sizeof(src_path), "%s/%s", TEMP_DIR,
+             result->header_filename);
 
     char *content = read_file_content(src_path);
     remove(src_path);
@@ -1331,8 +1506,8 @@ int run_server(void) {
         return 1;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT,
-                   &opt, sizeof(opt))) {
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt,
+                   sizeof(opt))) {
         perror("setsockopt");
         return 1;
     }
@@ -1368,7 +1543,8 @@ int run_server(void) {
         sscanf(buffer, "%15s %255s %15s", method, url, version);
 
         char *body = strstr(buffer, "\r\n\r\n");
-        if (body) body += 4;
+        if (body)
+            body += 4;
 
         handle_request(client_fd, method, url, body ? body : "");
 
@@ -1384,7 +1560,8 @@ int main(int argc, char *argv[]) {
 
     if (argc < 2) {
         printf("usage: %s <git_url> [-o output.h]\n"
-               "       %s serve\n", argv[0], argv[0]);
+               "       %s serve\n",
+               argv[0], argv[0]);
         return 1;
     }
 
