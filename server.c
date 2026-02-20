@@ -1447,8 +1447,53 @@ void free_result(ConversionResult *result) {
     free(result);
 }
 
-int run_cli(const char *git_url, const char *output_path) {
-    ConversionResult *result = convert_git_repository(git_url);
+int run_cli(const char *input, const char *output_path) {
+    struct stat st;
+    int is_local = (stat(input, &st) == 0 && S_ISDIR(st.st_mode));
+
+    if (is_local) {
+        char real[PATH_MAX];
+        if (!realpath(input, real)) {
+            fprintf(stderr, "error: could not resolve path %s\n", input);
+            return 1;
+        }
+
+        const char *repo_name = strrchr(real, '/');
+        repo_name = repo_name ? repo_name + 1 : real;
+
+        char *header_file = create_header_only_file(real, repo_name);
+        if (!header_file) {
+            fprintf(stderr, "error: failed to create header-only file\n");
+            return 1;
+        }
+
+        char src_path[512];
+        snprintf(src_path, sizeof(src_path), "%s/%s", TEMP_DIR, header_file);
+        free(header_file);
+
+        char *content = read_file_content(src_path);
+        remove(src_path);
+
+        if (!content) {
+            fprintf(stderr, "error: could not read generated file\n");
+            return 1;
+        }
+
+        const char *dest = output_path ? output_path : src_path;
+        FILE *out = fopen(dest, "w");
+        if (!out) {
+            fprintf(stderr, "error: could not write to %s\n", dest);
+            free(content);
+            return 1;
+        }
+        fputs(content, out);
+        fclose(out);
+        free(content);
+        printf("output:  %s\n", dest);
+        return 0;
+    }
+
+    ConversionResult *result = convert_git_repository(input);
 
     if (!result || !result->success) {
         fprintf(stderr, "error: %s\n",
